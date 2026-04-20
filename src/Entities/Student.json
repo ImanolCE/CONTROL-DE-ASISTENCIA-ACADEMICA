@@ -1,0 +1,28 @@
+{
+  "name": "Student",
+  "type": "object",
+  "properties": {
+    "matricula": {
+      "type": "string",
+      "description": "Matr\u00edcula del alumno (10 d\u00edgitos)",
+      "pattern": "^[0-9]{10}$"
+    },
+    "nombre": {
+      "type": "string",
+      "description": "Nombre completo del alumno"
+    },
+    "uid_rfid": {
+      "type": "string",
+      "description": "UID de la tarjeta RFID asignada"
+    },
+    "activo": {
+      "type": "boolean",
+      "default": true,
+      "description": "Estado del alumno"
+    }
+  },
+  "required": [
+    "matricula",
+    "nombre"
+  ]
+}

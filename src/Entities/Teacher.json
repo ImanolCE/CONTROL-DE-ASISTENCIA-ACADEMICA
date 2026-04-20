@@ -1,0 +1,29 @@
+{
+  "name": "Teacher",
+  "type": "object",
+  "properties": {
+    "numero_empleado": {
+      "type": "string",
+      "description": "N\u00famero de empleado del profesor (6 d\u00edgitos)",
+      "pattern": "^[0-9]{6}$"
+    },
+    "nombre": {
+      "type": "string",
+      "description": "Nombre completo del profesor"
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "Correo electr\u00f3nico"
+    },
+    "activo": {
+      "type": "boolean",
+      "default": true,
+      "description": "Estado del profesor"
+    }
+  },
+  "required": [
+    "numero_empleado",
+    "nombre"
+  ]
+}

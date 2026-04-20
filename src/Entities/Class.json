@@ -1,0 +1,37 @@
+{
+  "name": "Class",
+  "type": "object",
+  "properties": {
+    "nombre": {
+      "type": "string",
+      "description": "Nombre de la materia"
+    },
+    "grupo": {
+      "type": "string",
+      "description": "Grupo o secci\u00f3n"
+    },
+    "profesor_id": {
+      "type": "string",
+      "description": "ID del profesor asignado"
+    },
+    "profesor_nombre": {
+      "type": "string",
+      "description": "Nombre del profesor (denormalizado)"
+    },
+    "duracion_minutos": {
+      "type": "number",
+      "default": 120,
+      "description": "Duraci\u00f3n est\u00e1ndar de la clase en minutos"
+    },
+    "activa": {
+      "type": "boolean",
+      "default": true,
+      "description": "Estado de la clase"
+    }
+  },
+  "required": [
+    "nombre",
+    "grupo",
+    "profesor_id"
+  ]
+}

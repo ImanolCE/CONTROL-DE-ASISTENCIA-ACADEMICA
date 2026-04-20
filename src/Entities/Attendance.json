@@ -1,0 +1,41 @@
+{
+  "name": "Attendance",
+  "type": "object",
+  "properties": {
+    "sesion_id": {
+      "type": "string",
+      "description": "ID de la sesi\u00f3n"
+    },
+    "alumno_id": {
+      "type": "string",
+      "description": "ID del alumno"
+    },
+    "alumno_matricula": {
+      "type": "string",
+      "description": "Matr\u00edcula del alumno (denormalizado)"
+    },
+    "alumno_nombre": {
+      "type": "string",
+      "description": "Nombre del alumno (denormalizado)"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Momento exacto del registro"
+    },
+    "primera_vez": {
+      "type": "boolean",
+      "default": false,
+      "description": "Si fue registrado por primera vez en esta sesi\u00f3n"
+    },
+    "clase_nombre": {
+      "type": "string",
+      "description": "Nombre de la clase (denormalizado)"
+    }
+  },
+  "required": [
+    "sesion_id",
+    "alumno_id",
+    "timestamp"
+  ]
+}

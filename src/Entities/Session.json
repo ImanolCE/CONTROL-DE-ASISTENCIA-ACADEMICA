@@ -1,0 +1,46 @@
+{
+  "name": "Session",
+  "type": "object",
+  "properties": {
+    "clase_id": {
+      "type": "string",
+      "description": "ID de la clase"
+    },
+    "clase_nombre": {
+      "type": "string",
+      "description": "Nombre de la clase (denormalizado)"
+    },
+    "clase_grupo": {
+      "type": "string",
+      "description": "Grupo de la clase (denormalizado)"
+    },
+    "profesor_nombre": {
+      "type": "string",
+      "description": "Nombre del profesor (denormalizado)"
+    },
+    "fecha_inicio": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Fecha y hora de inicio de la sesi\u00f3n"
+    },
+    "fecha_fin": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Fecha y hora de fin de la sesi\u00f3n"
+    },
+    "activa": {
+      "type": "boolean",
+      "default": false,
+      "description": "Si la sesi\u00f3n est\u00e1 activa (permite registrar asistencias)"
+    },
+    "total_asistencias": {
+      "type": "number",
+      "default": 0,
+      "description": "Total de asistencias registradas"
+    }
+  },
+  "required": [
+    "clase_id",
+    "fecha_inicio"
+  ]
+}
