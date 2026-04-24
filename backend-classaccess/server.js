@@ -21,7 +21,7 @@ const db = mysql.createPool({
 
 db.getConnection((err) => {
     if(err) console.error('❌ Error BD:', err.message);
-    else console.log('✅ BD Conectada Correctamente');
+    else console.log(' BD Conectada Correctamente');
 });
 
 // --- VARIABLES GLOBALES IOT ---
@@ -35,8 +35,32 @@ let inputBuffer = "";
 // --- 2. CONEXIÓN IOT ---
 let port = null;
 let ultimaMacDetectada = null;
+let pantallaInicialMostrada = false;
 
 async function conectarArduino() {
+
+    //  Cerrar sesiones activas al iniciar servidor
+    db.query(
+        "UPDATE sesiones SET fecha_fin = NOW()",
+        () => {
+            console.log("Sesiones previas cerradas al iniciar sistema");
+            activarLaboratorioBase();
+        }
+    );
+
+    //  Bootstrap MAC desde BD (sin esperar BOOT)
+    await new Promise((resolve) => cargarMacDispositivoDefault(() => resolve()));
+
+    //  Cerrar sesiones activas al iniciar servidor
+    db.query(
+        "UPDATE sesiones SET fecha_fin = NOW()",
+        () => {
+            console.log("Sesiones previas cerradas al iniciar sistema");
+            activarLaboratorioBase();
+        }
+    );
+
+
     const ports = await SerialPort.list();
     const arduinoInfo = ports.find(p => p.manufacturer && (p.manufacturer.includes('Arduino') || p.manufacturer.includes('wch.cn')));
     const path = arduinoInfo ? arduinoInfo.path : '/dev/ttyUSB0'; 
@@ -46,28 +70,70 @@ async function conectarArduino() {
     port = new SerialPort({ path: path, baudRate: 115200, autoOpen: false });
     
     port.open((err) => {
+        inputBuffer = "";
+        tarjetaPendiente = null;
+        if (timerInput) clearTimeout(timerInput);
+        if (tiempoEspera) clearTimeout(tiempoEspera);
+        if (timerBorrarAbajo) clearTimeout(timerBorrarAbajo);
+
         if (err) {
-            console.log(`⚠️ No se pudo abrir ${path}. Modo Web Only.`);
+            console.log(` No se pudo abrir ${path}. Modo Web Only.`);
         } else {
-            console.log(`✅ IoT Conectado Exitosamente en ${path}`);
-            setTimeout(restaurarPantallaReposo, 2000);
+            console.log(` IoT Conectado Exitosamente en ${path}`);
+            // Pintar sin esperar RFID/BOOT
+            pantallaInicialMostrada = true;     
+            enviarTimeUnix();                   
+            setTimeout(() => restaurarPantallaReposo(), 2000);
         }
     });
 
-    const parser = port.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+    const parser = port.pipe(new ReadlineParser({ delimiter: '\n' })); // \r
     
     parser.on('data', (raw) => {
 
         //console.log("RAW SERIAL:", raw);
 
         try {
-            const data = JSON.parse(raw); 
+            //const data = JSON.parse(raw); 
+            const clean = raw.toString().trim();
+            const data = JSON.parse(clean);
                 if (data.mac) {
                     ultimaMacDetectada = data.mac;
+                        //  primera vez que detectamos MAC => pinta LAB sin esperar nada
+                    if (!pantallaInicialMostrada) {
+                        pantallaInicialMostrada = true;
+                        enviarTimeUnix(); // si el firmware lo soporta, quita “Connecting to Server”
+                        setTimeout(() => restaurarPantallaReposo(), 200);
+
+                        if (!globalThis.__timeSync24h) {
+                            globalThis.__timeSync24h = setInterval(() => enviarTimeUnix(), 24 * 60 * 60 * 1000);
+                        }
+                    }
                 }
+
+                if (data.type === "BOOT" && data.mac) {
+                    ultimaMacDetectada = data.mac;
+
+                    // 1) Sincroniza reloj (barra superior)
+                    enviarTimeUnix();
+
+                    // 2) Mostrar LAB de inmediato (pantalla base)
+                    setTimeout(() => restaurarPantallaReposo(), 200);
+
+                    // 3) Re-sincronizar cada 24h (como pide el doc)
+                    if (!globalThis.__timeSync24h) {
+                         globalThis.__timeSync24h = setInterval(() => enviarTimeUnix(), 24 * 60 * 60 * 1000);
+                    }
+
+                    return; // BOOT no debe pasar a lógica de RFID/KEYPAD
+                }
+
+
             procesarDatosIoT(data);
             
-        } catch (e) {}
+        } catch (e) {
+            console.log(" JSON inválido:", raw);
+        }
     });
 }
 conectarArduino();
@@ -96,6 +162,14 @@ function enviarMensaje(texto, row = 0) {
     }
 }
 
+function enviarTimeUnix(unix = Math.floor(Date.now() / 1000)) {
+  if (port?.isOpen && ultimaMacDetectada) {
+    const msg = { type: "TIME", mac: ultimaMacDetectada, unix };
+    port.write(JSON.stringify(msg) + "\n");
+    console.log("ENVIANDO TIME:", msg);
+  }
+}
+
 function enviarSonido(cmd) {
     if (port && port.isOpen) {
         port.write(JSON.stringify({ type: "CMD", cmd: cmd }) + "\n");
@@ -116,37 +190,112 @@ function mensajeTemporalAbajo(texto, sound, duracion = 3000) {
     if (timerBorrarAbajo) clearTimeout(timerBorrarAbajo);
     
     // Usamos la duración personalizada
-    timerBorrarAbajo = setTimeout(() => actualizarOLED(2, ""), duracion);
+    timerBorrarAbajo = setTimeout(() => {
+        actualizarOLED(2, "");
+
+        // ✅ Si estamos en LABORATORIO, restaurar prompt
+        db.query(
+            `SELECT tipo_sesion, id_profesor 
+            FROM sesiones 
+            WHERE fecha_fin > NOW() 
+            ORDER BY id_sesion DESC 
+            LIMIT 1`,
+            (err, r) => {
+                // ✅ si es LABORATORIO o el "profe LAB" (id 6), repinta prompt
+                if (r?.length && (r[0].tipo_sesion === "LABORATORIO" || r[0].id_profesor === 6)) {
+                enviarMensaje("Ingrese Matricula", "2");
+                }
+            }
+            );
+    }, duracion);
 }
 
 // --- 4. PANTALLA REPOSO ---
 function restaurarPantallaReposo() {
-    if (loopReloj) clearTimeout(loopReloj);
-    const sql = `SELECT s.fecha_inicio, p.shortname FROM sesiones s JOIN profesores p ON s.id_profesor = p.id_profesor WHERE NOW() BETWEEN s.fecha_inicio AND s.fecha_fin ORDER BY s.id_sesion DESC LIMIT 1`;
-    db.query(sql, (err, res) => {
-        if (res && res.length > 0) {
-            const inicioClase = new Date(res[0].fecha_inicio);
-            const ahora = new Date();
-            const nombreProfe = res[0].shortname || "Profe"; 
-            const limiteTolerancia = 15 * 60 * 1000; 
-            const tiempoTranscurrido = ahora - inicioClase;
-            const tiempoRestante = limiteTolerancia - tiempoTranscurrido;
 
-            if (tiempoRestante > 0) {
-                const m = Math.floor(tiempoRestante / 60000);
-                const s = Math.floor((tiempoRestante % 60000) / 1000);
-                const reloj = `${m}:${s < 10 ? '0' : ''}${s}`;
-                enviarMensaje(`Clase ${nombreProfe} ${reloj}`, "1");
-                loopReloj = setTimeout(restaurarPantallaReposo, 1000);
-            } else {
-                enviarMensaje(`Clase ${nombreProfe}`, "1");
-                loopReloj = null; 
-            }
-        } else {
-            enviarMensaje("Laboratorio Intel", "1");
-            loopReloj = setTimeout(restaurarPantallaReposo, 5000);
+    if (loopReloj) clearTimeout(loopReloj);
+
+    const sql = `
+        SELECT s.id_sesion, s.fecha_inicio, s.tipo_sesion, p.shortname
+        FROM sesiones s
+        JOIN profesores p ON s.id_profesor = p.id_profesor
+        WHERE s.fecha_fin > NOW()
+        ORDER BY s.id_sesion DESC
+        LIMIT 1
+    `;
+
+    db.query(sql, (err, res) => {
+
+        // 🔵 NO HAY SESIÓN → MODO LAB BASE
+        if (!res || !res.length) {
+            // Pantalla LAB base (sin reloj)
+            enviarMensaje("LAB INTEL", "0");        // grande (10 chars)
+            enviarMensaje("Modo LAB", "1");         // pequeño
+            enviarMensaje("Ingrese Matricula", "2");// pequeño abajo
+            loopReloj = null;
+            return;
         }
+
+        const { fecha_inicio, tipo_sesion, shortname } = res[0];
+
+        //  LABORATORIO → SIN CONTADOR
+        if (tipo_sesion === "LABORATORIO") {
+            // LABORATORIO: SIN contador, SIN loop
+            loopReloj = null;
+
+            enviarMensaje("LAB INTEL", "0");        
+            enviarMensaje("Modo LAB", "1");
+            enviarMensaje("Ingrese Matricula", "2");
+            return;
+        }
+
+        // 🟢 SOLO CLASE Y ASESORIA LLEVAN RELOJ
+        const inicio = new Date(fecha_inicio);
+        const ahora = new Date();
+        const limite = 15 * 60 * 1000;
+        const diff = ahora - inicio;
+        const restante = limite - diff;
+
+        let textoBase = tipo_sesion === "ASESORIA"
+            ? `Asesoria ${shortname}`
+            : `Clase ${shortname}`;
+
+        if (restante > 0) {
+            const m = Math.floor(restante / 60000);
+            const s = Math.floor((restante % 60000) / 1000);
+            const reloj = `${m}:${s < 10 ? '0' : ''}${s}`;
+            enviarMensaje(`${textoBase} ${reloj}`, "1");
+            loopReloj = setTimeout(restaurarPantallaReposo, 1000);
+        } else {
+            enviarMensaje(textoBase, "1");
+            loopReloj = null;
+        }
+
     });
+}
+
+// --- BOOTSTRAP MAC DESDE BD (sin tocar Arduino) ---
+function cargarMacDispositivoDefault(callback) {
+  // Escoge el primer dispositivo del laboratorio (puedes filtrar por nombre_salon)
+  const sql = `SELECT mac_address, nombre_salon FROM dispositivos ORDER BY id_dispositivo ASC LIMIT 1`;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.log(" No se pudo leer tabla dispositivos:", err.message);
+      return callback(null);
+    }
+    if (!rows?.length) {
+      console.log(" Tabla dispositivos vacía. No hay MAC para bootstrap.");
+      return callback(null);
+    }
+
+    const mac = rows[0].mac_address;
+    console.log(" MAC bootstrap desde BD:", mac, "|", rows[0].nombre_salon);
+
+    // Setea MAC para poder mandar MSG/TIME desde el arranque
+    ultimaMacDetectada = mac;
+    callback(mac);
+  });
 }
 
 // --- 5. LÓGICA DE NEGOCIO IOT ---
@@ -212,7 +361,8 @@ function procesarCodigo(codigo) {
     if (!codigo) return;
     codigo = codigo.trim();
     if (tarjetaPendiente) autoRegistrar(tarjetaPendiente, codigo);
-    else if (codigo === 'ADMIN' || codigo.length <= 6) gestionarClase(codigo); 
+    else if (codigo === "999" || codigo === "000") gestionarModoSesion(codigo);
+    else if (codigo === 'ADMIN' || codigo.length <= 6) gestionarClase(codigo);
     else registrarAsistencia(codigo, "TECLADO"); 
 }
 
@@ -251,29 +401,112 @@ function autoRegistrar(uid, matricula) {
     });
 }
 
-function gestionarClase(num_empleado) {
-    db.query('SELECT id_profesor, nombre, apellidos, shortname FROM profesores WHERE num_empleado = ?', [num_empleado], (err, resProfe) => {
-        if (!resProfe.length) { registrarAsistencia(num_empleado, "TECLADO"); return; }
-        const id_new = resProfe[0].id_profesor;
-        const nombre_saludo = `${resProfe[0].nombre} ${resProfe[0].apellidos}`;
-        db.query(`SELECT id_sesion, id_profesor FROM sesiones WHERE fecha_fin > NOW() ORDER BY id_sesion DESC LIMIT 1`, (err, resSesion) => {
-            if (resSesion.length > 0) {
-                const id_old = resSesion[0].id_profesor;
-                db.query('UPDATE sesiones SET fecha_fin = NOW() WHERE fecha_fin > NOW()', [], () => {
-                    if (id_old === id_new) { mensajeTemporalAbajo("Clase Terminada", "BUZZ_OK"); } 
-                    else { crearSesion(id_new, nombre_saludo); }
-                    setTimeout(restaurarPantallaReposo, 1000);
-                });
-            } else { crearSesion(id_new, nombre_saludo); }
-        });
-    });
+
+function gestionarClase(codigo) {
+
+    db.query(
+        "SELECT * FROM sesiones WHERE fecha_fin > NOW() ORDER BY id_sesion DESC LIMIT 1",
+        (err, sesionActiva) => {
+
+            db.query(
+                "SELECT * FROM profesores WHERE num_empleado = ?",
+                [codigo],
+                (err2, profe) => {
+
+                    if (!profe.length) {
+                        registrarAsistencia(codigo, "TECLADO");
+                        return;
+                    }
+
+                    const idProfe = profe[0].id_profesor;
+                    const nombre = profe[0].shortname;
+
+                    if (!sesionActiva.length) {
+                        crearSesion(idProfe, nombre, "CLASE");
+                        return;
+                    }
+
+                    const sesion = sesionActiva[0];
+
+                    // 🔵 SI ES LABORATORIO → CAMBIAR A CLASE
+                    if (sesion.tipo_sesion === "LABORATORIO") {
+
+                        db.query(
+                            "UPDATE sesiones SET fecha_fin = NOW() WHERE id_sesion = ?",
+                            [sesion.id_sesion],
+                            () => crearSesion(idProfe, nombre, "CLASE")
+                        );
+                        return;
+                    }
+
+                    //  MISMO PROFESOR → CERRAR
+                    if (sesion.id_profesor === idProfe) {
+
+                        db.query(
+                            "UPDATE sesiones SET fecha_fin = NOW() WHERE id_sesion = ?",
+                            [sesion.id_sesion],
+                            () => {
+                                mensajeTemporalAbajo("Sesion Finalizada", "BUZZ_OK");
+                                activarLaboratorioBase();
+                            }
+                        );
+                        return;
+                    }
+
+                    // 🟡 OTRO PROFESOR
+                    db.query(
+                        "UPDATE sesiones SET fecha_fin = NOW() WHERE id_sesion = ?",
+                        [sesion.id_sesion],
+                        () => crearSesion(idProfe, nombre, "CLASE")
+                    );
+
+                }
+            );
+        }
+    );
 }
 
-/* function crearSesion(id, nombre) {
-    db.query(`INSERT INTO sesiones (id_profesor, fecha_inicio, fecha_fin) VALUES (?, NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))`, [id], () => {
-        mensajeTemporalAbajo(`Hola ${nombre}`, "BUZZ_OK"); setTimeout(restaurarPantallaReposo, 1000);
-    });
-} */
+
+function gestionarModoSesion(codigo) {
+
+    db.query(
+        "SELECT * FROM sesiones WHERE fecha_fin > NOW() ORDER BY id_sesion DESC LIMIT 1",
+        (err, res) => {
+
+            if (!res.length) return;
+
+            const sesion = res[0];
+
+            if (sesion.tipo_sesion === "LABORATORIO") return;
+
+            if (codigo === "999" && sesion.tipo_sesion === "CLASE") {
+
+                db.query(
+                    "UPDATE sesiones SET tipo_sesion = 'ASESORIA' WHERE id_sesion = ?",
+                    [sesion.id_sesion],
+                    () => {
+                        mensajeTemporalAbajo("Modo Asesoria", "BUZZ_OK");
+                        restaurarPantallaReposo();
+                    }
+                );
+            }
+
+            if (codigo === "000" && sesion.tipo_sesion === "ASESORIA") {
+
+                db.query(
+                    "UPDATE sesiones SET tipo_sesion = 'CLASE' WHERE id_sesion = ?",
+                    [sesion.id_sesion],
+                    () => {
+                        mensajeTemporalAbajo("Modo Clase", "BUZZ_OK");
+                        restaurarPantallaReposo();
+                    }
+                );
+            }
+
+        }
+    );
+}
+
 
 function crearSesion(id_profesor, nombre, tipo = "CLASE") {
 
@@ -301,27 +534,125 @@ function crearSesion(id_profesor, nombre, tipo = "CLASE") {
     });
 }
 
-function registrarAsistencia(matricula, metodo) {
-    if (!matricula.startsWith('20') || matricula.length !== 10) { mensajeTemporalAbajo("ID Invalido", "BUZZ_ERR"); return; }
-    db.query(`SELECT id_sesion, id_profesor, fecha_inicio FROM sesiones WHERE NOW() BETWEEN fecha_inicio AND fecha_fin ORDER BY id_sesion DESC LIMIT 1`, (err, resSesion) => {
-        if (!resSesion.length) { mensajeTemporalAbajo("Espere Maestro", "BUZZ_ERR"); return; }
-        const inicio = new Date(resSesion[0].fecha_inicio);
-        const ahora = new Date();
-        const diffMinutos = (ahora - inicio) / 60000; 
-        if (diffMinutos > 15) { mensajeTemporalAbajo("Tolerancia Fin", "BUZZ_ERR"); return; }
-        const { id_sesion, id_profesor } = resSesion[0];
-        db.query('SELECT matricula FROM alumnos WHERE matricula = ?', [matricula], (err, resAlum) => {
-            const procesar = () => {
-                db.query('INSERT IGNORE INTO inscripciones (id_profesor, matricula) VALUES (?, ?)', [id_profesor, matricula]);
-                db.query('INSERT INTO asistencia_alumnos (id_sesion, matricula, hora_llegada, metodo) VALUES (?, ?, CURTIME(), ?)', [id_sesion, matricula, metodo], (e) => {
-                    if (e) { if (e.code === 'ER_DUP_ENTRY') mensajeTemporalAbajo("Ya Asistio", "BUZZ_KEY"); else mensajeTemporalAbajo("Error BD", "BUZZ_ERR"); } 
-                    else mensajeTemporalAbajo("Asistencia OK", "BUZZ_OK");
-                });
-            };
-            if (!resAlum.length) { db.query('INSERT INTO alumnos (matricula, nombre) VALUES (?, ?)', [matricula, 'Estudiante'], (e) => !e && procesar()); } else procesar();
-        });
+function crearSesionLaboratorio(callback) {
+
+    getCuatrimestreActualId((err, id_cuatrimestre) => {
+
+        if (err || !id_cuatrimestre) {
+            console.error("Error obteniendo cuatrimestre actual");
+            return callback(false);
+        }
+
+        const ID_PROF_LAB = 6; // 
+
+        db.query(
+            `INSERT INTO sesiones 
+            (id_profesor, id_cuatrimestre, tipo_sesion, fecha_inicio, fecha_fin) 
+            VALUES (?, ?, 'LABORATORIO', NOW(), '2099-12-31 23:59:59')`,
+            [ID_PROF_LAB, id_cuatrimestre],
+            (err) => {
+                if (err) {
+                    console.error("Error creando sesión LAB:", err);
+                    return callback(false);
+                }
+
+                console.log("Sesión LABORATORIO creada automáticamente");
+                callback(true);
+            }
+        );
+
     });
 }
+
+function activarLaboratorioBase() {
+
+    crearSesionLaboratorio((ok) => {
+        if (ok) {
+            console.log("LABORATORIO base activo correctamente");
+            setTimeout(restaurarPantallaReposo, 1000);
+        } else {
+            console.log("Error activando LAB base");
+        }
+    });
+
+}
+
+
+function registrarAsistencia(matricula, metodo) {
+
+    if (!matricula.startsWith('20') || matricula.length !== 10) {
+        mensajeTemporalAbajo("ID Invalido", "BUZZ_ERR");
+        return;
+    }
+
+    db.query(
+        `SELECT id_sesion, fecha_inicio, tipo_sesion 
+         FROM sesiones 
+         WHERE fecha_fin > NOW()
+         ORDER BY id_sesion DESC 
+         LIMIT 1`,
+        (err, resSesion) => {
+
+            if (err) {
+                console.error(err);
+                mensajeTemporalAbajo("Error BD", "BUZZ_ERR");
+                return;
+            }
+
+            if (!resSesion.length) {
+                mensajeTemporalAbajo("Sin Sesion Activa", "BUZZ_ERR");
+                return;
+            }
+
+            const { id_sesion, fecha_inicio } = resSesion[0];
+
+            // 🔥 validar tolerancia
+            const inicio = new Date(fecha_inicio);
+            const ahora = new Date();
+            const diffMinutos = (ahora - inicio) / 60000;
+
+            if (resSesion[0].tipo_sesion !== "LABORATORIO") {
+                if (diffMinutos > 15) {
+                    mensajeTemporalAbajo("Tolerancia Fin", "BUZZ_ERR");
+                    return;
+                }
+            }
+
+            // 🔥 verificar si ya registró asistencia
+            db.query(
+                `SELECT * FROM asistencia_alumnos 
+                 WHERE id_sesion = ? AND matricula = ?`,
+                [id_sesion, matricula],
+                (err, duplicado) => {
+
+                    if (duplicado.length > 0) {
+                        mensajeTemporalAbajo("Ya Asistio", "BUZZ_KEY");
+                        return;
+                    }
+
+                    // 🔥 insertar asistencia
+                    db.query(
+                        `INSERT INTO asistencia_alumnos 
+                         (id_sesion, matricula, hora_llegada, metodo)
+                         VALUES (?, ?, CURTIME(), ?)`,
+                        [id_sesion, matricula, metodo],
+                        (err) => {
+
+                            if (err) {
+                                console.error(err);
+                                mensajeTemporalAbajo("Error BD", "BUZZ_ERR");
+                                return;
+                            }
+
+                            mensajeTemporalAbajo("Asistencia OK", "BUZZ_OK");
+                        }
+                    );
+                }
+            );
+        }
+    );
+}
+
 
 // --- HELPERS CUATRIMESTRE ---
 function getCuatrimestreActualId(callback) {
@@ -535,6 +866,7 @@ app.get('/api/cuatrimestres', (req, res) => {
   });
 });
 
+
 app.get('/api/cuatrimestres/actual', (req, res) => {
   db.query(`SELECT id, nombre, fecha_inicio, fecha_fin, es_actual FROM cuatrimestres WHERE es_actual = 1 ORDER BY id DESC LIMIT 1`, (e, r) => {
     if (e) return res.status(500).json({ success: false, error: e.message });
@@ -542,6 +874,98 @@ app.get('/api/cuatrimestres/actual', (req, res) => {
     res.json({ success: true, data: r[0] });
   });
 });
+
+// APIS DE SESIONES 
+
+app.get("/api/sesiones", (req, res) => {
+  const { cuatrimestre } = req.query;
+
+  let sql = `
+    SELECT 
+      s.id_sesion,
+      s.tipo_sesion,
+      s.id_cuatrimestre,
+      c.nombre AS cuatrimestre_nombre,
+      p.id_profesor,
+      p.shortname,
+      p.nombre,
+      p.apellidos,
+      s.fecha_inicio,
+      s.fecha_fin,
+      CASE WHEN s.fecha_fin > NOW() THEN 'ACTIVA' ELSE 'CERRADA' END AS estado
+    FROM sesiones s
+    LEFT JOIN cuatrimestres c ON c.id = s.id_cuatrimestre
+    LEFT JOIN profesores p ON p.id_profesor = s.id_profesor
+    WHERE 1=1
+  `;
+
+  const params = [];
+  if (cuatrimestre) {
+    sql += " AND s.id_cuatrimestre = ? ";
+    params.push(cuatrimestre);
+  }
+
+  sql += " ORDER BY s.id_sesion DESC ";
+
+  db.query(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ success: false, message: err.message });
+    res.json({ success: true, data: rows });
+  });
+});
+
+
+app.get("/api/sesiones/:id/asistencias", (req, res) => {
+  const { id } = req.params;
+
+  const sql = `
+    SELECT 
+      a.id_asistencia_alum,
+      a.id_sesion,
+      a.matricula,
+      a.hora_llegada,
+      a.metodo,
+      a.created_at
+    FROM asistencia_alumnos a
+    WHERE a.id_sesion = ?
+    ORDER BY a.created_at ASC
+  `;
+
+  db.query(sql, [id], (err, rows) => {
+    if (err) return res.status(500).json({ success: false, message: err.message });
+    res.json({ success: true, data: rows });
+  });
+});
+
+app.get("/api/lab", (req, res) => {
+  const { from, to } = req.query;
+
+  if (!from || !to) {
+    return res.status(400).json({ success: false, message: "from y to son requeridos (YYYY-MM-DD)" });
+  }
+
+  const sql = `
+    SELECT
+      a.id_asistencia_alum,
+      a.matricula,
+      a.metodo,
+      a.created_at,
+      s.id_sesion
+    FROM asistencia_alumnos a
+    JOIN sesiones s ON s.id_sesion = a.id_sesion
+    WHERE s.tipo_sesion = 'LABORATORIO'
+      AND a.created_at >= CONCAT(?, ' 00:00:00')
+      AND a.created_at <= CONCAT(?, ' 23:59:59')
+    ORDER BY a.created_at ASC
+  `;
+
+  db.query(sql, [from, to], (err, rows) => {
+    if (err) return res.status(500).json({ success: false, message: err.message });
+    res.json({ success: true, data: rows });
+  });
+});
+
+
+
 
 // api de ping con iot
 
