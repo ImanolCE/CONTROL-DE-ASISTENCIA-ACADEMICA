@@ -193,7 +193,7 @@ function mensajeTemporalAbajo(texto, sound, duracion = 3000) {
     timerBorrarAbajo = setTimeout(() => {
         actualizarOLED(2, "");
 
-        // ✅ Si estamos en LABORATORIO, restaurar prompt
+        //  Si estamos en LABORATORIO, restaurar prompt
         db.query(
             `SELECT tipo_sesion, id_profesor 
             FROM sesiones 
@@ -201,7 +201,7 @@ function mensajeTemporalAbajo(texto, sound, duracion = 3000) {
             ORDER BY id_sesion DESC 
             LIMIT 1`,
             (err, r) => {
-                // ✅ si es LABORATORIO o el "profe LAB" (id 6), repinta prompt
+                //  si es LABORATORIO o el "profe LAB" (id 6), repinta prompt
                 if (r?.length && (r[0].tipo_sesion === "LABORATORIO" || r[0].id_profesor === 6)) {
                 enviarMensaje("Ingrese Matricula", "2");
                 }
@@ -507,9 +507,25 @@ function gestionarModoSesion(codigo) {
     );
 }
 
+function getAsignacionDefaultProfesor(id_profesor, id_cuatrimestre, callback) {
+  db.query(
+    `SELECT aa.id_asignacion
+     FROM asignaciones_academicas aa
+     WHERE aa.id_profesor = ?
+       AND aa.id_cuatrimestre = ?
+       AND aa.activo = 1
+     ORDER BY aa.id_asignacion ASC
+     LIMIT 1`,
+    [id_profesor, id_cuatrimestre],
+    (err, rows) => {
+      if (err) return callback(err, null);
+      if (!rows.length) return callback(null, null);
+      callback(null, rows[0].id_asignacion);
+    }
+  );
+}
 
 function crearSesion(id_profesor, nombre, tipo = "CLASE") {
-
     getCuatrimestreActualId((err, id_cuatrimestre) => {
 
         if (err || !id_cuatrimestre) {
@@ -517,20 +533,29 @@ function crearSesion(id_profesor, nombre, tipo = "CLASE") {
             return;
         }
 
-        db.query(
-            `INSERT INTO sesiones 
-            (id_profesor, id_cuatrimestre, tipo_sesion, fecha_inicio, fecha_fin) 
-            VALUES (?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))`,
-            [id_profesor, id_cuatrimestre, tipo],
-            (err) => {
-                if (err) {
-                    mensajeTemporalAbajo("Error BD", "BUZZ_ERR");
-                } else {
-                    mensajeTemporalAbajo(`Sesion ${tipo} iniciada`, "BUZZ_OK");
-                }
-            }
-        );
+        getAsignacionDefaultProfesor(id_profesor, id_cuatrimestre, (err2, id_asignacion) => {
 
+            if (err2) {
+                mensajeTemporalAbajo("Error Asign", "BUZZ_ERR");
+                return;
+            }
+
+            db.query(
+                `INSERT INTO sesiones 
+                (id_profesor, id_cuatrimestre, id_asignacion, tipo_sesion, fecha_inicio, fecha_fin) 
+                VALUES (?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))`,
+                [id_profesor, id_cuatrimestre, id_asignacion, tipo],
+                (err3) => {
+                    if (err3) {
+                        console.error(err3);
+                        mensajeTemporalAbajo("Error BD", "BUZZ_ERR");
+                    } else {
+                        mensajeTemporalAbajo(`Sesion ${tipo} iniciada`, "BUZZ_OK");
+                    }
+                }
+            );
+
+        });
     });
 }
 
@@ -547,8 +572,8 @@ function crearSesionLaboratorio(callback) {
 
         db.query(
             `INSERT INTO sesiones 
-            (id_profesor, id_cuatrimestre, tipo_sesion, fecha_inicio, fecha_fin) 
-            VALUES (?, ?, 'LABORATORIO', NOW(), '2099-12-31 23:59:59')`,
+            (id_profesor, id_cuatrimestre, id_asignacion, tipo_sesion, fecha_inicio, fecha_fin) 
+            VALUES (?, ?, NULL, 'LABORATORIO', NOW(), '2099-12-31 23:59:59')`,
             [ID_PROF_LAB, id_cuatrimestre],
             (err) => {
                 if (err) {
@@ -586,10 +611,10 @@ function registrarAsistencia(matricula, metodo) {
     }
 
     db.query(
-        `SELECT id_sesion, fecha_inicio, tipo_sesion 
-         FROM sesiones 
+        `SELECT id_sesion, id_profesor, id_cuatrimestre, fecha_inicio, fecha_fin, tipo_sesion
+         FROM sesiones
          WHERE fecha_fin > NOW()
-         ORDER BY id_sesion DESC 
+         ORDER BY id_sesion DESC
          LIMIT 1`,
         (err, resSesion) => {
 
@@ -604,7 +629,8 @@ function registrarAsistencia(matricula, metodo) {
                 return;
             }
 
-            const { id_sesion, fecha_inicio } = resSesion[0];
+            //const { id_sesion, fecha_inicio } = resSesion[0];
+            const { id_sesion, id_profesor, id_cuatrimestre, fecha_inicio } = resSesion[0];
 
             // 🔥 validar tolerancia
             const inicio = new Date(fecha_inicio);
@@ -633,8 +659,8 @@ function registrarAsistencia(matricula, metodo) {
                     // 🔥 insertar asistencia
                     db.query(
                         `INSERT INTO asistencia_alumnos 
-                         (id_sesion, matricula, hora_llegada, metodo)
-                         VALUES (?, ?, CURTIME(), ?)`,
+                        (id_sesion, matricula, hora_llegada, metodo)
+                        VALUES (?, ?, CURTIME(), ?)`,
                         [id_sesion, matricula, metodo],
                         (err) => {
 
@@ -644,7 +670,20 @@ function registrarAsistencia(matricula, metodo) {
                                 return;
                             }
 
-                            mensajeTemporalAbajo("Asistencia OK", "BUZZ_OK");
+                            //  asegurar inscripción del alumno en el cuatrimestre actual del profesor
+                            db.query(
+                                `INSERT IGNORE INTO inscripciones 
+                                (id_profesor, id_cuatrimestre, matricula, fecha_inscripcion)
+                                VALUES (?, ?, ?, NOW())`,
+                                [id_profesor, id_cuatrimestre, matricula],
+                                (errIns) => {
+                                    if (errIns) {
+                                        console.error("Error inscribiendo alumno:", errIns);
+                                    }
+                                }
+                            );
+
+                            mensajeTemporalAbajo("Asistencia OK", "BUZZ_OK", 6000);
                         }
                     );
                 }
@@ -750,6 +789,68 @@ app.post('/api/admin/cuatrimestres', (req, res) => {
 });
 
 
+// Editar cuatrimestre
+app.put('/api/admin/cuatrimestres/:id', (req, res) => {
+    const { id } = req.params;
+    const { nombre, fecha_inicio, fecha_fin } = req.body;
+
+    if (!nombre || !fecha_inicio || !fecha_fin) {
+        return res.status(400).json({ success: false, message: "Datos incompletos" });
+    }
+
+    db.query(
+        `UPDATE cuatrimestres
+         SET nombre = ?, fecha_inicio = ?, fecha_fin = ?
+         WHERE id = ?`,
+        [nombre, fecha_inicio, fecha_fin, id],
+        (err, result) => {
+            if (err) return res.status(500).json({ success: false, error: err.message });
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ success: false, message: "Cuatrimestre no encontrado" });
+            }
+            res.json({ success: true, message: "Cuatrimestre actualizado correctamente" });
+        }
+    );
+});
+
+// Eliminar cuatrimestre
+app.delete('/api/admin/cuatrimestres/:id', (req, res) => {
+    const { id } = req.params;
+
+    db.query(`SELECT es_actual FROM cuatrimestres WHERE id = ?`, [id], (err, rows) => {
+        if (err) return res.status(500).json({ success: false, error: err.message });
+        if (!rows.length) return res.status(404).json({ success: false, message: "Cuatrimestre no encontrado" });
+
+        if (Number(rows[0].es_actual) === 1) {
+            return res.status(400).json({ success: false, message: "No se puede eliminar el cuatrimestre actual" });
+        }
+
+        db.query(`SELECT COUNT(*) AS total FROM sesiones WHERE id_cuatrimestre = ?`, [id], (err2, sRows) => {
+            if (err2) return res.status(500).json({ success: false, error: err2.message });
+
+            db.query(`SELECT COUNT(*) AS total FROM inscripciones WHERE id_cuatrimestre = ?`, [id], (err3, iRows) => {
+                if (err3) return res.status(500).json({ success: false, error: err3.message });
+
+                const totalSesiones = sRows?.[0]?.total || 0;
+                const totalInscripciones = iRows?.[0]?.total || 0;
+
+                if (totalSesiones > 0 || totalInscripciones > 0) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "No se puede eliminar porque tiene sesiones o inscripciones asociadas"
+                    });
+                }
+
+                db.query(`DELETE FROM cuatrimestres WHERE id = ?`, [id], (err4) => {
+                    if (err4) return res.status(500).json({ success: false, error: err4.message });
+                    res.json({ success: true, message: "Cuatrimestre eliminado correctamente" });
+                });
+            });
+        });
+    });
+});
+
+
 // Marcar cuatrimestre como actual
 app.put('/api/admin/cuatrimestres/:id/actual', (req, res) => {
     const { id } = req.params;
@@ -825,39 +926,423 @@ app.post('/api/admin/reporte-afluencia', (req, res) => {
     });
 });
 
+
+// =========================
+// ADMIN: MATERIAS
+// =========================
+
+// Listar materias
+app.get('/api/admin/materias', (req, res) => {
+  db.query(
+    `SELECT * FROM materias ORDER BY nombre ASC`,
+    (err, rows) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      res.json({ success: true, data: rows });
+    }
+  );
+});
+
+// Crear materia
+app.post('/api/admin/materias', (req, res) => {
+  const { clave, nombre, horas_asignatura } = req.body;
+
+  if (!nombre) {
+    return res.status(400).json({ success: false, message: 'El nombre es obligatorio' });
+  }
+
+  db.query(
+    `INSERT INTO materias (clave, nombre, horas_asignatura)
+     VALUES (?, ?, ?)`,
+    [clave || null, nombre, horas_asignatura || null],
+    (err) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      res.json({ success: true, message: 'Materia creada correctamente' });
+    }
+  );
+});
+
+// Editar materia
+app.put('/api/admin/materias/:id', (req, res) => {
+  const { id } = req.params;
+  const { clave, nombre, horas_asignatura } = req.body;
+
+  if (!nombre) {
+    return res.status(400).json({ success: false, message: 'El nombre es obligatorio' });
+  }
+
+  db.query(
+    `UPDATE materias
+     SET clave = ?, nombre = ?, horas_asignatura = ?
+     WHERE id_materia = ?`,
+    [clave || null, nombre, horas_asignatura || null, id],
+    (err, result) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: 'Materia no encontrada' });
+      }
+      res.json({ success: true, message: 'Materia actualizada correctamente' });
+    }
+  );
+});
+
+// Eliminar materia
+app.delete('/api/admin/materias/:id', (req, res) => {
+  const { id } = req.params;
+
+  db.query(
+    `DELETE FROM materias WHERE id_materia = ?`,
+    [id],
+    (err, result) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: 'Materia no encontrada' });
+      }
+      res.json({ success: true, message: 'Materia eliminada correctamente' });
+    }
+  );
+});
+
+// =========================
+// ADMIN: GRUPOS
+// =========================
+
+// Listar grupos
+app.get('/api/admin/grupos', (req, res) => {
+  db.query(
+    `SELECT * FROM grupos ORDER BY nombre ASC`,
+    (err, rows) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      res.json({ success: true, data: rows });
+    }
+  );
+});
+
+// Crear grupo
+app.post('/api/admin/grupos', (req, res) => {
+  const { nombre, turno } = req.body;
+
+  if (!nombre) {
+    return res.status(400).json({ success: false, message: 'El nombre del grupo es obligatorio' });
+  }
+
+  db.query(
+    `INSERT INTO grupos (nombre, turno)
+     VALUES (?, ?)`,
+    [nombre, turno || null],
+    (err) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      res.json({ success: true, message: 'Grupo creado correctamente' });
+    }
+  );
+});
+
+// Editar grupo
+app.put('/api/admin/grupos/:id', (req, res) => {
+  const { id } = req.params;
+  const { nombre, turno } = req.body;
+
+  if (!nombre) {
+    return res.status(400).json({ success: false, message: 'El nombre del grupo es obligatorio' });
+  }
+
+  db.query(
+    `UPDATE grupos
+     SET nombre = ?, turno = ?
+     WHERE id_grupo = ?`,
+    [nombre, turno || null, id],
+    (err, result) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: 'Grupo no encontrado' });
+      }
+      res.json({ success: true, message: 'Grupo actualizado correctamente' });
+    }
+  );
+});
+
+// Eliminar grupo
+app.delete('/api/admin/grupos/:id', (req, res) => {
+  const { id } = req.params;
+
+  db.query(
+    `DELETE FROM grupos WHERE id_grupo = ?`,
+    [id],
+    (err, result) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: 'Grupo no encontrado' });
+      }
+      res.json({ success: true, message: 'Grupo eliminado correctamente' });
+    }
+  );
+});
+
+// =========================
+// ADMIN: ASIGNACIONES ACADÉMICAS
+// =========================
+
+// Listar asignaciones
+app.get('/api/admin/asignaciones', (req, res) => {
+  db.query(
+    `SELECT 
+        aa.id_asignacion,
+        aa.id_profesor,
+        aa.id_cuatrimestre,
+        aa.id_materia,
+        aa.id_grupo,
+        aa.activo,
+        CONCAT(p.nombre, ' ', p.apellidos) AS profesor,
+        p.shortname,
+        c.nombre AS cuatrimestre,
+        m.clave AS materia_clave,
+        m.nombre AS materia,
+        m.horas_asignatura,
+        g.nombre AS grupo,
+        g.turno
+     FROM asignaciones_academicas aa
+     JOIN profesores p ON aa.id_profesor = p.id_profesor
+     JOIN cuatrimestres c ON aa.id_cuatrimestre = c.id
+     JOIN materias m ON aa.id_materia = m.id_materia
+     JOIN grupos g ON aa.id_grupo = g.id_grupo
+     ORDER BY c.fecha_inicio DESC, profesor ASC, m.nombre ASC`,
+    (err, rows) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      res.json({ success: true, data: rows });
+    }
+  );
+});
+
+// Crear asignación
+app.post('/api/admin/asignaciones', (req, res) => {
+  const { id_profesor, id_cuatrimestre, id_materia, id_grupo, activo } = req.body;
+
+  if (!id_profesor || !id_cuatrimestre || !id_materia || !id_grupo) {
+    return res.status(400).json({ success: false, message: 'Datos incompletos' });
+  }
+
+  db.query(
+    `INSERT INTO asignaciones_academicas
+     (id_profesor, id_cuatrimestre, id_materia, id_grupo, activo)
+     VALUES (?, ?, ?, ?, ?)`,
+    [id_profesor, id_cuatrimestre, id_materia, id_grupo, activo ?? 1],
+    (err) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      res.json({ success: true, message: 'Asignación creada correctamente' });
+    }
+  );
+});
+
+// Editar asignación
+app.put('/api/admin/asignaciones/:id', (req, res) => {
+  const { id } = req.params;
+  const { id_profesor, id_cuatrimestre, id_materia, id_grupo, activo } = req.body;
+
+  if (!id_profesor || !id_cuatrimestre || !id_materia || !id_grupo) {
+    return res.status(400).json({ success: false, message: 'Datos incompletos' });
+  }
+
+  db.query(
+    `UPDATE asignaciones_academicas
+     SET id_profesor = ?, id_cuatrimestre = ?, id_materia = ?, id_grupo = ?, activo = ?
+     WHERE id_asignacion = ?`,
+    [id_profesor, id_cuatrimestre, id_materia, id_grupo, activo ?? 1, id],
+    (err, result) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: 'Asignación no encontrada' });
+      }
+      res.json({ success: true, message: 'Asignación actualizada correctamente' });
+    }
+  );
+});
+
+// Eliminar asignación
+app.delete('/api/admin/asignaciones/:id', (req, res) => {
+  const { id } = req.params;
+
+  db.query(
+    `DELETE FROM asignaciones_academicas WHERE id_asignacion = ?`,
+    [id],
+    (err, result) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: 'Asignación no encontrada' });
+      }
+      res.json({ success: true, message: 'Asignación eliminada correctamente' });
+    }
+  );
+});
+
+
+//////
+/////
+
 app.get('/api/dashboard/:id_profesor', (req, res) => {
-    const { id_profesor } = req.params;
-    db.query(`SELECT COUNT(*) as total FROM inscripciones WHERE id_profesor = ?`, [id_profesor], (e, r1) => {
-        if(e) return res.status(500).json({error:e.message});
-        db.query(`SELECT COUNT(*) as total FROM asistencia_alumnos a JOIN sesiones s ON a.id_sesion = s.id_sesion WHERE s.id_profesor = ? AND DATE(s.fecha_inicio) = CURDATE()`, [id_profesor], (e, r2) => {
-            if(e) return res.status(500).json({error:e.message});
-            db.query(`SELECT a.hora_llegada, al.matricula, al.nombre, a.metodo FROM asistencia_alumnos a JOIN sesiones s ON a.id_sesion = s.id_sesion JOIN alumnos al ON a.matricula = al.matricula WHERE s.id_profesor = ? AND DATE(s.fecha_inicio) = CURDATE() ORDER BY a.hora_llegada DESC LIMIT 5`, [id_profesor], (e, r3) => {
-                if(e) return res.status(500).json({error:e.message});
-                res.json({ success: true, alumnos: r1?.[0]?.total||0, asistencias_hoy: r2?.[0]?.total||0, recientes: r3||[] });
-            });
-        });
-    });
+  const { id_profesor } = req.params;
+  const { cuatrimestreId } = req.query; // 👈 viene del front
+
+  // 1) Total inscritos (por cuatri si aplica)
+  const paramsIns = [id_profesor];
+  let whereIns = "id_profesor = ?";
+  if (cuatrimestreId) {
+    whereIns += " AND id_cuatrimestre = ?";
+    paramsIns.push(cuatrimestreId);
+  }
+
+  db.query(
+    `SELECT COUNT(*) as total FROM inscripciones WHERE ${whereIns}`,
+    paramsIns,
+    (e, r1) => {
+      if (e) return res.status(500).json({ error: e.message });
+
+      // 2) Asistencias hoy (por cuatri si aplica)
+      const paramsHoy = [id_profesor];
+      let whereHoy = "s.id_profesor = ? AND DATE(s.fecha_inicio) = CURDATE()";
+      if (cuatrimestreId) {
+        whereHoy += " AND s.id_cuatrimestre = ?";
+        paramsHoy.push(cuatrimestreId);
+      }
+
+      db.query(
+        `SELECT COUNT(*) as total
+         FROM asistencia_alumnos a
+         JOIN sesiones s ON a.id_sesion = s.id_sesion
+         WHERE ${whereHoy}`,
+        paramsHoy,
+        (e2, r2) => {
+          if (e2) return res.status(500).json({ error: e2.message });
+
+          // 3) Recientes (por cuatri si aplica)
+          const paramsRec = [id_profesor];
+          let whereRec = "s.id_profesor = ? AND DATE(s.fecha_inicio) = CURDATE()";
+          if (cuatrimestreId) {
+            whereRec += " AND s.id_cuatrimestre = ?";
+            paramsRec.push(cuatrimestreId);
+          }
+
+          db.query(
+            `SELECT a.hora_llegada, al.matricula, al.nombre, a.metodo
+             FROM asistencia_alumnos a
+             JOIN sesiones s ON a.id_sesion = s.id_sesion
+             JOIN alumnos al ON a.matricula = al.matricula
+             WHERE ${whereRec}
+             ORDER BY a.hora_llegada DESC
+             LIMIT 5`,
+            paramsRec,
+            (e3, r3) => {
+              if (e3) return res.status(500).json({ error: e3.message });
+
+              res.json({
+                success: true,
+                alumnos: r1?.[0]?.total || 0,
+                asistencias_hoy: r2?.[0]?.total || 0,
+                recientes: r3 || []
+              });
+            }
+          );
+        }
+      );
+    }
+  );
 });
 
+
+//  MIS ALUMNOS - ahora filtra por cuatrimestreId si lo mandas
 app.post('/api/mis-alumnos', (req, res) => {
-    db.query(`SELECT a.matricula, a.nombre, i.fecha_inscripcion FROM inscripciones i JOIN alumnos a ON i.matricula = a.matricula WHERE i.id_profesor = ? ORDER BY a.nombre ASC`, [req.body.id_profesor], (e, r) => {
-        if(e) return res.status(500).json({error:e.message});
-        res.json({ success: true, data: r });
-    });
+  const { id_profesor, cuatrimestreId } = req.body;
+
+  const params = [id_profesor];
+  let where = "i.id_profesor = ?";
+  if (cuatrimestreId) {
+    where += " AND i.id_cuatrimestre = ?";
+    params.push(cuatrimestreId);
+  }
+
+  db.query(
+    `SELECT a.matricula, a.nombre, i.fecha_inscripcion
+     FROM inscripciones i
+     JOIN alumnos a ON i.matricula = a.matricula
+     WHERE ${where}
+     ORDER BY a.nombre ASC`,
+    params,
+    (e, r) => {
+      if (e) return res.status(500).json({ error: e.message });
+      res.json({ success: true, data: r });
+    }
+  );
 });
 
+//  REPORTE - ahora filtra por cuatrimestreId si lo mandas
 app.post('/api/reporte', (req, res) => {
-    const { id_profesor, fechaInicio, fechaFin } = req.body;
-    db.query(`SELECT COUNT(*) as total FROM inscripciones WHERE id_profesor = ?`, [id_profesor], (e, rT) => {
-        if(e) return res.status(500).json({error:e.message});
-        db.query(`SELECT s.id_sesion, s.fecha_inicio, s.fecha_fin, a.hora_llegada, al.matricula, al.nombre, a.metodo FROM sesiones s LEFT JOIN asistencia_alumnos a ON s.id_sesion = a.id_sesion LEFT JOIN alumnos al ON a.matricula = al.matricula WHERE s.id_profesor = ? AND DATE(s.fecha_inicio) BETWEEN ? AND ? ORDER BY s.fecha_inicio DESC, a.hora_llegada ASC`, [id_profesor, fechaInicio, fechaFin], (e, rows) => {
-            if(e) return res.status(500).json({error:e.message});
-            const map = {}; rows.forEach(r => { if(!map[r.id_sesion]) map[r.id_sesion]={id_sesion:r.id_sesion, fecha:r.fecha_inicio, inicio: new Date(r.fecha_inicio).toLocaleTimeString(), fin: new Date(r.fecha_fin).toLocaleTimeString(), asistencias:[]}; if(r.matricula) map[r.id_sesion].asistencias.push({matricula:r.matricula, nombre:r.nombre, hora:r.hora_llegada, metodo:r.metodo}); });
-            res.json({ success: !e, data: Object.values(map), totalMisAlumnos: rT?.[0]?.total });
-        });
-    });
+  const { id_profesor, fechaInicio, fechaFin, cuatrimestreId } = req.body;
+
+  // Total inscritos (por cuatri si aplica)
+  const paramsTotal = [id_profesor];
+  let whereTotal = "id_profesor = ?";
+  if (cuatrimestreId) {
+    whereTotal += " AND id_cuatrimestre = ?";
+    paramsTotal.push(cuatrimestreId);
+  }
+
+  db.query(
+    `SELECT COUNT(*) as total FROM inscripciones WHERE ${whereTotal}`,
+    paramsTotal,
+    (e, rT) => {
+      if (e) return res.status(500).json({ error: e.message });
+
+      // Sesiones + asistencias (por cuatri si aplica)
+      const params = [id_profesor, fechaInicio, fechaFin];
+      let where = "s.id_profesor = ? AND DATE(s.fecha_inicio) BETWEEN ? AND ?";
+      if (cuatrimestreId) {
+        where += " AND s.id_cuatrimestre = ?";
+        params.push(cuatrimestreId);
+      }
+
+      db.query(
+        `SELECT s.id_sesion, s.fecha_inicio, s.fecha_fin,
+                a.hora_llegada, al.matricula, al.nombre, a.metodo
+         FROM sesiones s
+         LEFT JOIN asistencia_alumnos a ON s.id_sesion = a.id_sesion
+         LEFT JOIN alumnos al ON a.matricula = al.matricula
+         WHERE ${where}
+         ORDER BY s.fecha_inicio DESC, a.hora_llegada ASC`,
+        params,
+        (e2, rows) => {
+          if (e2) return res.status(500).json({ error: e2.message });
+
+          const map = {};
+          rows.forEach(r => {
+            if (!map[r.id_sesion]) {
+              map[r.id_sesion] = {
+                id_sesion: r.id_sesion,
+                fecha: r.fecha_inicio,
+                inicio: new Date(r.fecha_inicio).toLocaleTimeString(),
+                fin: new Date(r.fecha_fin).toLocaleTimeString(),
+                asistencias: []
+              };
+            }
+            if (r.matricula) {
+              map[r.id_sesion].asistencias.push({
+                matricula: r.matricula,
+                nombre: r.nombre,
+                hora: r.hora_llegada,
+                metodo: r.metodo
+              });
+            }
+          });
+
+          res.json({
+            success: true,
+            data: Object.values(map),
+            totalMisAlumnos: rT?.[0]?.total || 0
+          });
+        }
+      );
+    }
+  );
 });
 
+/// CUATRIMESTRES 
 
 app.get('/api/cuatrimestres', (req, res) => {
   db.query(`SELECT id, nombre, fecha_inicio, fecha_fin, es_actual FROM cuatrimestres ORDER BY fecha_inicio DESC`, (e, r) => {
@@ -875,34 +1360,50 @@ app.get('/api/cuatrimestres/actual', (req, res) => {
   });
 });
 
-// APIS DE SESIONES 
+
+///// APIS DE SESIONES /////
 
 app.get("/api/sesiones", (req, res) => {
-  const { cuatrimestre } = req.query;
+  const { cuatrimestre, id_profesor } = req.query;
 
   let sql = `
     SELECT 
       s.id_sesion,
       s.tipo_sesion,
+      s.tipo_asesoria,
+      s.unidad_tema,
       s.id_cuatrimestre,
+      s.id_asignacion,
       c.nombre AS cuatrimestre_nombre,
       p.id_profesor,
       p.shortname,
       p.nombre,
       p.apellidos,
+      m.nombre AS materia,
+      m.clave AS materia_clave,
+      g.nombre AS grupo,
       s.fecha_inicio,
       s.fecha_fin,
       CASE WHEN s.fecha_fin > NOW() THEN 'ACTIVA' ELSE 'CERRADA' END AS estado
     FROM sesiones s
     LEFT JOIN cuatrimestres c ON c.id = s.id_cuatrimestre
     LEFT JOIN profesores p ON p.id_profesor = s.id_profesor
+    LEFT JOIN asignaciones_academicas aa ON s.id_asignacion = aa.id_asignacion
+    LEFT JOIN materias m ON aa.id_materia = m.id_materia
+    LEFT JOIN grupos g ON aa.id_grupo = g.id_grupo
     WHERE 1=1
   `;
 
   const params = [];
+
   if (cuatrimestre) {
     sql += " AND s.id_cuatrimestre = ? ";
     params.push(cuatrimestre);
+  }
+
+  if (id_profesor) {
+    sql += " AND s.id_profesor = ? ";
+    params.push(id_profesor);
   }
 
   sql += " ORDER BY s.id_sesion DESC ";
@@ -919,22 +1420,78 @@ app.get("/api/sesiones/:id/asistencias", (req, res) => {
 
   const sql = `
     SELECT 
+      s.id_sesion,
+      s.tipo_sesion,
+      s.tipo_asesoria,
+      s.unidad_tema,
+      s.fecha_inicio,
+      s.fecha_fin,
+      c.nombre AS cuatrimestre,
+      CONCAT(p.nombre, ' ', p.apellidos) AS profesor,
+      p.shortname,
+      m.nombre AS materia,
+      m.clave AS materia_clave,
+      m.horas_asignatura,
+      g.nombre AS grupo,
       a.id_asistencia_alum,
-      a.id_sesion,
       a.matricula,
+      al.nombre AS nombre_alumno,
       a.hora_llegada,
       a.metodo,
       a.created_at
-    FROM asistencia_alumnos a
-    WHERE a.id_sesion = ?
+    FROM sesiones s
+    LEFT JOIN cuatrimestres c ON c.id = s.id_cuatrimestre
+    LEFT JOIN profesores p ON p.id_profesor = s.id_profesor
+    LEFT JOIN asignaciones_academicas aa ON s.id_asignacion = aa.id_asignacion
+    LEFT JOIN materias m ON aa.id_materia = m.id_materia
+    LEFT JOIN grupos g ON aa.id_grupo = g.id_grupo
+    LEFT JOIN asistencia_alumnos a ON a.id_sesion = s.id_sesion
+    LEFT JOIN alumnos al ON al.matricula = a.matricula
+    WHERE s.id_sesion = ?
     ORDER BY a.created_at ASC
   `;
 
   db.query(sql, [id], (err, rows) => {
     if (err) return res.status(500).json({ success: false, message: err.message });
-    res.json({ success: true, data: rows });
+
+    if (!rows.length) {
+      return res.json({ success: true, session: null, asistencias: [] });
+    }
+
+    const head = rows[0];
+
+    const session = {
+      id_sesion: head.id_sesion,
+      tipo_sesion: head.tipo_sesion,
+      tipo_asesoria: head.tipo_asesoria,
+      unidad_tema: head.unidad_tema,
+      fecha_inicio: head.fecha_inicio,
+      fecha_fin: head.fecha_fin,
+      cuatrimestre: head.cuatrimestre,
+      profesor: head.profesor,
+      shortname: head.shortname,
+      materia: head.materia,
+      materia_clave: head.materia_clave,
+      horas_asignatura: head.horas_asignatura,
+      grupo: head.grupo
+    };
+
+    const asistencias = rows
+      .filter(r => r.id_asistencia_alum)
+      .map(r => ({
+        id_asistencia_alum: r.id_asistencia_alum,
+        matricula: r.matricula,
+        nombre_alumno: r.nombre_alumno,
+        hora_llegada: r.hora_llegada,
+        metodo: r.metodo,
+        created_at: r.created_at
+      }));
+
+    res.json({ success: true, session, asistencias });
   });
 });
+
+
 
 app.get("/api/lab", (req, res) => {
   const { from, to } = req.query;
@@ -964,22 +1521,318 @@ app.get("/api/lab", (req, res) => {
   });
 });
 
+// =========================
+// HORARIOS
+// =========================
+
+// Admin: ver todos los horarios
+app.get('/api/admin/horarios', (req, res) => {
+  db.query(
+    `SELECT
+        h.id_horario,
+        h.id_asignacion,
+        h.dia_semana,
+        h.hora_inicio,
+        h.hora_fin,
+        h.tipo_sesion,
+        h.aula,
+        CONCAT(p.nombre, ' ', p.apellidos) AS profesor,
+        m.nombre AS materia,
+        g.nombre AS grupo,
+        c.nombre AS cuatrimestre
+     FROM horarios h
+     JOIN asignaciones_academicas aa ON h.id_asignacion = aa.id_asignacion
+     JOIN profesores p ON aa.id_profesor = p.id_profesor
+     JOIN materias m ON aa.id_materia = m.id_materia
+     JOIN grupos g ON aa.id_grupo = g.id_grupo
+     JOIN cuatrimestres c ON aa.id_cuatrimestre = c.id
+     ORDER BY FIELD(h.dia_semana,'LUNES','MARTES','MIERCOLES','JUEVES','VIERNES','SABADO'), h.hora_inicio ASC`,
+    (err, rows) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      res.json({ success: true, data: rows });
+    }
+  );
+});
+
+// Profesor: ver solo sus horarios
+app.get('/api/profesor/:id_profesor/horarios', (req, res) => {
+  const { id_profesor } = req.params;
+  const { cuatrimestreId } = req.query;
+
+  let sql = `
+    SELECT
+        h.id_horario,
+        h.id_asignacion,
+        h.dia_semana,
+        h.hora_inicio,
+        h.hora_fin,
+        h.tipo_sesion,
+        h.aula,
+        m.nombre AS materia,
+        g.nombre AS grupo,
+        c.nombre AS cuatrimestre
+     FROM horarios h
+     JOIN asignaciones_academicas aa ON h.id_asignacion = aa.id_asignacion
+     JOIN materias m ON aa.id_materia = m.id_materia
+     JOIN grupos g ON aa.id_grupo = g.id_grupo
+     JOIN cuatrimestres c ON aa.id_cuatrimestre = c.id
+     WHERE aa.id_profesor = ?
+  `;
+  const params = [id_profesor];
+
+  if (cuatrimestreId) {
+    sql += ` AND aa.id_cuatrimestre = ?`;
+    params.push(cuatrimestreId);
+  }
+
+  sql += ` ORDER BY FIELD(h.dia_semana,'LUNES','MARTES','MIERCOLES','JUEVES','VIERNES','SABADO'), h.hora_inicio ASC`;
+
+  db.query(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ success: false, error: err.message });
+    res.json({ success: true, data: rows });
+  });
+});
+
+// Crear horario (admin)
+app.post('/api/admin/horarios', (req, res) => {
+  const { id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula } = req.body;
+
+  if (!id_asignacion || !dia_semana || !hora_inicio || !hora_fin || !tipo_sesion) {
+    return res.status(400).json({ success: false, message: 'Datos incompletos' });
+  }
+
+  db.query(
+    `INSERT INTO horarios
+     (id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula || null],
+    (err) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      res.json({ success: true, message: 'Horario creado correctamente' });
+    }
+  );
+});
+
+// Editar horario (admin o profesor)
+app.put('/api/horarios/:id', (req, res) => {
+  const { id } = req.params;
+  const { id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula } = req.body;
+
+  if (!id_asignacion || !dia_semana || !hora_inicio || !hora_fin || !tipo_sesion) {
+    return res.status(400).json({ success: false, message: 'Datos incompletos' });
+  }
+
+  db.query(
+    `UPDATE horarios
+     SET id_asignacion = ?, dia_semana = ?, hora_inicio = ?, hora_fin = ?, tipo_sesion = ?, aula = ?
+     WHERE id_horario = ?`,
+    [id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula || null, id],
+    (err, result) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: 'Horario no encontrado' });
+      }
+      res.json({ success: true, message: 'Horario actualizado correctamente' });
+    }
+  );
+});
+
+// Eliminar horario (admin o profesor)
+app.delete('/api/horarios/:id', (req, res) => {
+  const { id } = req.params;
+
+  db.query(
+    `DELETE FROM horarios WHERE id_horario = ?`,
+    [id],
+    (err, result) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!result.affectedRows) {
+        return res.status(404).json({ success: false, message: 'Horario no encontrado' });
+      }
+      res.json({ success: true, message: 'Horario eliminado correctamente' });
+    }
+  );
+});
+
+// =========================
+// PROFESOR: ASIGNACIONES Y CRUD DE HORARIOS PROPIOS
+// =========================
+
+// Profesor: ver solo sus asignaciones activas por cuatrimestre
+app.get('/api/profesor/:id_profesor/asignaciones', (req, res) => {
+  const { id_profesor } = req.params;
+  const { cuatrimestreId } = req.query;
+
+  let sql = `
+    SELECT
+      aa.id_asignacion,
+      aa.id_profesor,
+      aa.id_cuatrimestre,
+      aa.id_materia,
+      aa.id_grupo,
+      aa.activo,
+      c.nombre AS cuatrimestre,
+      m.clave AS materia_clave,
+      m.nombre AS materia,
+      m.horas_asignatura,
+      g.nombre AS grupo,
+      g.turno
+    FROM asignaciones_academicas aa
+    JOIN cuatrimestres c ON aa.id_cuatrimestre = c.id
+    JOIN materias m ON aa.id_materia = m.id_materia
+    JOIN grupos g ON aa.id_grupo = g.id_grupo
+    WHERE aa.id_profesor = ?
+  `;
+
+  const params = [id_profesor];
+
+  if (cuatrimestreId) {
+    sql += ` AND aa.id_cuatrimestre = ?`;
+    params.push(cuatrimestreId);
+  }
+
+  sql += ` ORDER BY aa.activo DESC, m.nombre ASC, g.nombre ASC`;
+
+  db.query(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ success: false, error: err.message });
+    res.json({ success: true, data: rows });
+  });
+});
+
+// Profesor: crear horario SOLO sobre sus asignaciones
+app.post('/api/profesor/:id_profesor/horarios', (req, res) => {
+  const { id_profesor } = req.params;
+  const { id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula } = req.body;
+
+  if (!id_asignacion || !dia_semana || !hora_inicio || !hora_fin || !tipo_sesion) {
+    return res.status(400).json({ success: false, message: 'Datos incompletos' });
+  }
+
+  db.query(
+    `SELECT id_asignacion
+     FROM asignaciones_academicas
+     WHERE id_asignacion = ? AND id_profesor = ?`,
+    [id_asignacion, id_profesor],
+    (err, rows) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!rows.length) {
+        return res.status(403).json({ success: false, message: 'La asignación no pertenece al profesor' });
+      }
+
+      db.query(
+        `INSERT INTO horarios
+         (id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula || null],
+        (err2) => {
+          if (err2) return res.status(500).json({ success: false, error: err2.message });
+          res.json({ success: true, message: 'Horario creado correctamente' });
+        }
+      );
+    }
+  );
+});
+
+// Profesor: editar horario SOLO si le pertenece
+app.put('/api/profesor/:id_profesor/horarios/:id_horario', (req, res) => {
+  const { id_profesor, id_horario } = req.params;
+  const { id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula } = req.body;
+
+  if (!id_asignacion || !dia_semana || !hora_inicio || !hora_fin || !tipo_sesion) {
+    return res.status(400).json({ success: false, message: 'Datos incompletos' });
+  }
+
+  db.query(
+    `SELECT h.id_horario
+     FROM horarios h
+     JOIN asignaciones_academicas aa ON h.id_asignacion = aa.id_asignacion
+     WHERE h.id_horario = ? AND aa.id_profesor = ?`,
+    [id_horario, id_profesor],
+    (err, rows) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!rows.length) {
+        return res.status(403).json({ success: false, message: 'El horario no pertenece al profesor' });
+      }
+
+      db.query(
+        `SELECT id_asignacion
+         FROM asignaciones_academicas
+         WHERE id_asignacion = ? AND id_profesor = ?`,
+        [id_asignacion, id_profesor],
+        (err2, rows2) => {
+          if (err2) return res.status(500).json({ success: false, error: err2.message });
+          if (!rows2.length) {
+            return res.status(403).json({ success: false, message: 'La asignación no pertenece al profesor' });
+          }
+
+          db.query(
+            `UPDATE horarios
+             SET id_asignacion = ?, dia_semana = ?, hora_inicio = ?, hora_fin = ?, tipo_sesion = ?, aula = ?
+             WHERE id_horario = ?`,
+            [id_asignacion, dia_semana, hora_inicio, hora_fin, tipo_sesion, aula || null, id_horario],
+            (err3, result) => {
+              if (err3) return res.status(500).json({ success: false, error: err3.message });
+              if (!result.affectedRows) {
+                return res.status(404).json({ success: false, message: 'Horario no encontrado' });
+              }
+              res.json({ success: true, message: 'Horario actualizado correctamente' });
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+// Profesor: eliminar horario SOLO si le pertenece
+app.delete('/api/profesor/:id_profesor/horarios/:id_horario', (req, res) => {
+  const { id_profesor, id_horario } = req.params;
+
+  db.query(
+    `SELECT h.id_horario
+     FROM horarios h
+     JOIN asignaciones_academicas aa ON h.id_asignacion = aa.id_asignacion
+     WHERE h.id_horario = ? AND aa.id_profesor = ?`,
+    [id_horario, id_profesor],
+    (err, rows) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (!rows.length) {
+        return res.status(403).json({ success: false, message: 'El horario no pertenece al profesor' });
+      }
+
+      db.query(
+        `DELETE FROM horarios WHERE id_horario = ?`,
+        [id_horario],
+        (err2, result) => {
+          if (err2) return res.status(500).json({ success: false, error: err2.message });
+          if (!result.affectedRows) {
+            return res.status(404).json({ success: false, message: 'Horario no encontrado' });
+          }
+          res.json({ success: true, message: 'Horario eliminado correctamente' });
+        }
+      );
+    }
+  );
+});
 
 
+// =========================
+// DISPOSITIVOS / SALONES
+// =========================
 
-// api de ping con iot
-
-/* app.post("/api/iot/ping", (req, res) => {
-	  console.log("PING iot:", req.body);
-	  res.json({ ok: true, received: true, echo: req.body });
-	});
-
-app.post("/api/iot/event", (req, res) => {
-	  console.log("EVENT iot:", req.body);
-	  res.status(201).json({ ok: true, saved: true });
-	});
- */
-
+app.get('/api/dispositivos', (req, res) => {
+  db.query(
+    `SELECT id_dispositivo, mac_address, nombre_salon
+     FROM dispositivos
+     ORDER BY nombre_salon ASC`,
+    (err, rows) => {
+      if (err) {
+        return res.status(500).json({ success: false, error: err.message });
+      }
+      res.json({ success: true, data: rows });
+    }
+  );
+});
 
 
 const PORT = 3001;

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, FileText, GraduationCap, LogOut, Users } from 'lucide-react';
+import { LayoutDashboard, FileText, GraduationCap, LogOut, Users, CalendarClock, BookOpen  } from 'lucide-react';
+
 
 export default function Sidebar({ user, onLogout, cuatrimestreId, cuatrimestres, loadingCuatrimestre }) {
   const activeLinkClass =
@@ -32,10 +33,21 @@ export default function Sidebar({ user, onLogout, cuatrimestreId, cuatrimestres,
             <LayoutDashboard size={20} />
             <span>Control</span>
           </NavLink>
+          
 
           <NavLink to="/my-students" className={({ isActive }) => (isActive ? activeLinkClass : normalLinkClass)}>
             <Users size={20} />
             <span>Mis Alumnos</span>
+          </NavLink>
+
+          <NavLink to="/classes" className={({ isActive }) => (isActive ? activeLinkClass : normalLinkClass)}>
+            <BookOpen size={20} />
+            <span>Clases/Horario</span>
+          </NavLink>
+
+          <NavLink to="/sessions" className={({ isActive }) => (isActive ? activeLinkClass : normalLinkClass)}>
+            <CalendarClock size={20} />
+            <span>Sesiones</span>
           </NavLink>
 
           <NavLink to="/reports" className={({ isActive }) => (isActive ? activeLinkClass : normalLinkClass)}>

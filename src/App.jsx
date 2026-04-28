@@ -9,9 +9,12 @@ import Login from './Pages/Login';
 import Admin from './Pages/Admin';
 import ClassesAdmin from './Pages/ClassesAdmin';
 
+import Sessions from './Pages/Sessions';
+import SessionDetail from './Pages/SessionDetail';
+
+import Classes from './Pages/Classes';
 
 import './index.css';
-
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -25,7 +28,24 @@ export default function App() {
 
   const isAdmin = useMemo(() => user?.num_empleado === 'ADMIN', [user]);
 
+  // ✅ 1) Restaurar sesión
+  useEffect(() => {
+    const saved = localStorage.getItem('usuario_classaccess');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setUser(parsed);
+        setIsLoggedIn(true);
+      } catch (e) {
+        localStorage.removeItem('usuario_classaccess');
+      }
+    }
+  }, []);
+
   const handleLogin = (data) => {
+    // ✅ 2) Guardar sesión
+    localStorage.setItem('usuario_classaccess', JSON.stringify(data));
+
     setUser(data);
     setIsLoggedIn(true);
     navigate(data.num_empleado === 'ADMIN' ? '/admin' : '/dashboard');
@@ -46,11 +66,15 @@ export default function App() {
   // Cargar cuatrimestres + seleccionar el actual (default) cuando entra Profesor
   useEffect(() => {
     const loadCuatrimestres = async () => {
-      if (!isLoggedIn || !user || isAdmin) return;
+      //if (!isLoggedIn || !user || isAdmin) return;
+      if (!isLoggedIn || !user) return;
 
       setLoadingCuatrimestre(true);
       try {
-        const storageKey = `classaccess_cuatrimestre_${user.id_profesor}`;
+        //const storageKey = `classaccess_cuatrimestre_${user.id_profesor}`;
+        const storageKey = isAdmin
+          ? 'classaccess_cuatrimestre_admin'
+          : `classaccess_cuatrimestre_${user.id_profesor}`;
         const savedId = localStorage.getItem(storageKey);
 
         // 1) Traer lista
@@ -64,7 +88,7 @@ export default function App() {
         const actualJson = await actualRes.json();
         const actualId = actualJson?.data?.id ?? actualJson?.id ?? null;
 
-        // 3) Resolver selección (primero lo guardado si existe en lista, si no el actual, si no el primero)
+        // 3) Resolver selección
         const listIds = new Set(list.map(c => String(c.id)));
         const finalId =
           (savedId && listIds.has(String(savedId))) ? savedId :
@@ -86,7 +110,10 @@ export default function App() {
   // Persistir cambio manual (Profesor)
   const onChangeCuatrimestre = (newId) => {
     if (!user) return;
-    const storageKey = `classaccess_cuatrimestre_${user.id_profesor}`;
+    //const storageKey = `classaccess_cuatrimestre_${user.id_profesor}`;
+    const storageKey = isAdmin
+      ? 'classaccess_cuatrimestre_admin'
+      : `classaccess_cuatrimestre_${user.id_profesor}`;
     setCuatrimestreId(Number(newId));
     localStorage.setItem(storageKey, String(newId));
   };
@@ -99,7 +126,25 @@ export default function App() {
             <Routes>
               <Route path="/admin" element={<Admin />} />
               <Route path="/admin/clases" element={<ClassesAdmin />} />
+
+              {/* ✅ Sesiones para admin (opcional pero recomendado) */}
+              <Route
+                path="/admin/sessions"
+                element={
+                  <Sessions
+                    user={user}
+                    cuatrimestres={cuatrimestres}
+                    cuatrimestreId={cuatrimestreId}
+                    onChangeCuatrimestre={onChangeCuatrimestre}
+                    loadingCuatrimestre={loadingCuatrimestre}
+                  />
+                }
+              />
+
+               <Route path="/admin/sessions/:id" element={<SessionDetail />} />
+
               <Route path="*" element={<Navigate to="/admin" />} />
+
             </Routes>
           </AdminLayout>
         ) : (
@@ -111,6 +156,7 @@ export default function App() {
               cuatrimestres={cuatrimestres}
               loadingCuatrimestre={loadingCuatrimestre}
             />
+
             <main className="flex-1 p-8 ml-64">
               <Routes>
                 <Route
@@ -124,11 +170,10 @@ export default function App() {
                         onChangeCuatrimestre={onChangeCuatrimestre}
                         loadingCuatrimestre={loadingCuatrimestre}
                       />
-                    ) : (
-                      <div>Cargando...</div>
-                    )
+                    ) : <div>Cargando...</div>
                   }
                 />
+
                 <Route
                   path="/reports"
                   element={
@@ -140,11 +185,10 @@ export default function App() {
                         onChangeCuatrimestre={onChangeCuatrimestre}
                         loadingCuatrimestre={loadingCuatrimestre}
                       />
-                    ) : (
-                      <div>Cargando...</div>
-                    )
+                    ) : <div>Cargando...</div>
                   }
                 />
+
                 <Route
                   path="/my-students"
                   element={
@@ -156,11 +200,43 @@ export default function App() {
                         onChangeCuatrimestre={onChangeCuatrimestre}
                         loadingCuatrimestre={loadingCuatrimestre}
                       />
-                    ) : (
-                      <div>Cargando...</div>
-                    )
+                    ) : <div>Cargando...</div>
                   }
                 />
+
+                <Route
+                  path="/classes"
+                  element={
+                    user ? (
+                      <Classes
+                        user={user}
+                        cuatrimestres={cuatrimestres}
+                        cuatrimestreId={cuatrimestreId}
+                        onChangeCuatrimestre={onChangeCuatrimestre}
+                        loadingCuatrimestre={loadingCuatrimestre}
+                      />
+                    ) : <div>Cargando...</div>
+                  }
+                />
+
+                {/* ✅ NUEVAS RUTAS */}
+                <Route
+                  path="/sessions"
+                  element={
+                    user ? (
+                      <Sessions
+                        user={user}
+                        cuatrimestres={cuatrimestres}
+                        cuatrimestreId={cuatrimestreId}
+                        onChangeCuatrimestre={onChangeCuatrimestre}
+                        loadingCuatrimestre={loadingCuatrimestre}
+                      />
+                    ) : <div>Cargando...</div>
+                  }
+                />
+
+                <Route path="/sessions/:id" element={<SessionDetail />} />
+
                 <Route path="/" element={<Navigate to="/dashboard" />} />
                 <Route path="*" element={<Navigate to="/dashboard" />} />
               </Routes>

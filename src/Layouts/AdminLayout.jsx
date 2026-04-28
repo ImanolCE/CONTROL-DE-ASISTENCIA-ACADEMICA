@@ -1,6 +1,7 @@
 // src/Layouts/AdminLayout.jsx
 import React from 'react';
 import { LogOut, Users, Shield } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 export default function AdminLayout({ children, onLogout }) {
   return (
@@ -16,6 +17,22 @@ export default function AdminLayout({ children, onLogout }) {
             <p className="text-xs text-slate-400">Administrador del Sistema</p>
           </div>
         </div>
+
+        {/* <div className="flex items-center gap-3">
+          <Link
+            to="/admin"
+            className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm"
+          >
+            Panel
+          </Link>
+
+          <Link
+            to="/admin/sessions"
+            className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm"
+          >
+            Sesiones
+          </Link>
+        </div> */}
         
         <div className="flex items-center gap-6">
           <div className="hidden md:block text-right">
